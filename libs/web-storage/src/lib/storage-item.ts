@@ -1,11 +1,16 @@
-import { effect, signal, WritableSignal } from '@angular/core';
-import { ZodError, ZodSafeParseResult, ZodType } from 'zod';
+import {
+  assertInInjectionContext,
+  effect,
+  signal,
+  WritableSignal,
+} from '@angular/core';
+import { StandardSchemaV1 } from '@standard-schema/spec';
 
 export type StorageItemConfiguration<T> = {
   storage: Storage;
   key: string;
-  schema: ZodType<T>;
-  defaultValueProvider: (error: ZodError<T>) => T;
+  schema: StandardSchemaV1<unknown, T>;
+  defaultValueProvider: (issues: ReadonlyArray<StandardSchemaV1.Issue>) => T;
 };
 
 export type StorageItem<T> = {
@@ -16,11 +21,13 @@ export type StorageItem<T> = {
 export const storageItem = <T>(
   configuration: StorageItemConfiguration<T>,
 ): StorageItem<T> => {
+  assertInInjectionContext(storageItem);
+
   const { storage, key, schema, defaultValueProvider } = configuration;
 
   const parseResult = parseStorageItem(storage.getItem(key), schema);
-  const initialValue = resolveParseResult(parseResult, defaultValueProvider);
-  const valueSignal = signal<T>(initialValue);
+  const value = resolveParseResult(parseResult, defaultValueProvider);
+  const valueSignal = signal<T>(value);
 
   // Read from storage whenever it changes in another tab or window
   addEventListener('storage', (event) => {
@@ -33,8 +40,8 @@ export const storageItem = <T>(
     }
 
     const parseResult = parseStorageItem(event.newValue, schema);
-    const newValue = resolveParseResult(parseResult, defaultValueProvider);
-    valueSignal.set(newValue);
+    const value = resolveParseResult(parseResult, defaultValueProvider);
+    valueSignal.set(value);
   });
 
   // Write to storage whenever the signal value changes
@@ -45,26 +52,35 @@ export const storageItem = <T>(
 
 const parseStorageItem = <T>(
   value: string | null,
-  schema: ZodType<T>,
-): ZodSafeParseResult<T> => {
+  schema: StandardSchemaV1<unknown, T>,
+): StandardSchemaV1.Result<T> => {
   let storedValue: unknown = null;
 
-  if (value != null) {
+  if (value !== null) {
     try {
       storedValue = JSON.parse(value);
     } catch {
-      storedValue = value;
+      storedValue = null;
     }
   }
 
-  return schema.safeParse(storedValue);
+  const validationResult = schema['~standard'].validate(storedValue);
+  console.log('Validation result:', validationResult);
+
+  if (validationResult instanceof Promise) {
+    throw new Error(
+      'Asynchronous validation is not supported for storage items.',
+    );
+  }
+
+  return validationResult;
 };
 
 const resolveParseResult = <T>(
-  parseResult: ZodSafeParseResult<T>,
-  defaultValueProvider: (error: ZodError<T>) => T,
+  parseResult: StandardSchemaV1.Result<T>,
+  defaultValueProvider: (issues: ReadonlyArray<StandardSchemaV1.Issue>) => T,
 ): T => {
-  return parseResult.success
-    ? parseResult.data
-    : defaultValueProvider(parseResult.error);
+  return parseResult.issues
+    ? defaultValueProvider(parseResult.issues)
+    : parseResult.value;
 };
