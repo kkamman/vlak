@@ -1,1 +1,1 @@
-export * from './lib/web-storage-item';
+export * from './lib/storage-item';
