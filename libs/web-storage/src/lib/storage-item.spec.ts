@@ -1,14 +1,13 @@
 import { TestBed } from '@angular/core/testing';
 import zod from 'zod';
-import { storageItem, StorageItemConfiguration } from './storage-item';
+import { storageItem } from './storage-item';
 
 describe('webStorageItem', () => {
-  const testSchema = zod.object({ test: zod.string() });
-  const testConfig: StorageItemConfiguration<zod.infer<typeof testSchema>> = {
+  const testConfig = {
     storage: localStorage,
     key: 'test',
-    schema: testSchema,
-    defaultValueProvider: () => ({ test: 'test' }),
+    schema: zod.object({ test: zod.string() }),
+    defaultValue: () => ({ test: 'test' }),
   };
 
   const localStorageSpy = vi

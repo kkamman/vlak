@@ -1,36 +1,42 @@
 import {
   assertInInjectionContext,
+  DestroyRef,
   effect,
+  inject,
+  Renderer2,
   signal,
   WritableSignal,
 } from '@angular/core';
 import { StandardSchemaV1 } from '@standard-schema/spec';
 
-export type StorageItemConfiguration<T> = {
+export interface StorageItem<TKey extends string, TValue> {
+  readonly key: TKey;
+  readonly value: WritableSignal<TValue>;
+}
+
+export function storageItem<
+  TKey extends string,
+  TValue extends object,
+  TSchema extends StandardSchemaV1<unknown, TValue>,
+>(config: {
   storage: Storage;
-  key: string;
-  schema: StandardSchemaV1<unknown, T>;
-  defaultValueProvider: (issues: ReadonlyArray<StandardSchemaV1.Issue>) => T;
-};
-
-export type StorageItem<T> = {
-  readonly key: string;
-  readonly value: WritableSignal<T>;
-};
-
-export const storageItem = <T>(
-  configuration: StorageItemConfiguration<T>,
-): StorageItem<T> => {
+  key: TKey;
+  schema: TSchema;
+  defaultValue: (
+    issues: ReadonlyArray<StandardSchemaV1.Issue>,
+  ) => StandardSchemaV1.InferOutput<TSchema>;
+}): StorageItem<TKey, StandardSchemaV1.InferOutput<TSchema>> {
   assertInInjectionContext(storageItem);
 
-  const { storage, key, schema, defaultValueProvider } = configuration;
+  const { storage, key, schema, defaultValue } = config;
 
-  const parseResult = parseStorageItem(storage.getItem(key), schema);
-  const value = resolveParseResult(parseResult, defaultValueProvider);
-  const valueSignal = signal<T>(value);
+  const value = resolveStoredValue(storage.getItem(key), schema, defaultValue);
+  const valueSignal = signal<TValue>(value);
 
-  // Read from storage whenever it changes in another tab or window
-  addEventListener('storage', (event) => {
+  const valuesToSkipWriting = new WeakSet<TValue>();
+
+  // Update the signal when the storage item changes in other tabs/windows
+  registerStorageListener((event) => {
     if (event.storageArea !== storage) {
       return;
     }
@@ -39,33 +45,58 @@ export const storageItem = <T>(
       return;
     }
 
-    const parseResult = parseStorageItem(event.newValue, schema);
-    const value = resolveParseResult(parseResult, defaultValueProvider);
+    const value = resolveStoredValue(event.newValue, schema, defaultValue);
+    valuesToSkipWriting.add(value);
     valueSignal.set(value);
   });
 
-  // Write to storage whenever the signal value changes
-  effect(() => storage.setItem(key, JSON.stringify(valueSignal())));
+  // Update storage whenever the signal value changes
+  effect(() => {
+    const value = valueSignal();
+
+    if (valuesToSkipWriting.has(value)) {
+      valuesToSkipWriting.delete(value);
+      return;
+    }
+
+    storage.setItem(key, JSON.stringify(valueSignal()));
+  });
 
   return { key, value: valueSignal };
-};
+}
 
-const parseStorageItem = <T>(
+function registerStorageListener(callback: (event: StorageEvent) => void) {
+  const renderer = inject(Renderer2);
+  const destroyRef = inject(DestroyRef);
+  const disposeStorageListener = renderer.listen('window', 'storage', callback);
+  destroyRef.onDestroy(() => disposeStorageListener());
+}
+
+function resolveStoredValue<T>(
   value: string | null,
   schema: StandardSchemaV1<unknown, T>,
-): StandardSchemaV1.Result<T> => {
-  let storedValue: unknown = null;
+  defaultValue: (issues: ReadonlyArray<StandardSchemaV1.Issue>) => T,
+): T {
+  const parsedValue = parseStoredValue(value);
+  const validationResult = validateStoredValue(parsedValue, schema);
+  return validationResult.issues
+    ? defaultValue(validationResult.issues)
+    : validationResult.value;
+}
 
-  if (value !== null) {
-    try {
-      storedValue = JSON.parse(value);
-    } catch {
-      storedValue = null;
-    }
+function parseStoredValue(value: string | null): unknown | null {
+  try {
+    return value !== null ? JSON.parse(value) : null;
+  } catch {
+    return null;
   }
+}
 
-  const validationResult = schema['~standard'].validate(storedValue);
-  console.log('Validation result:', validationResult);
+function validateStoredValue<T>(
+  value: unknown,
+  schema: StandardSchemaV1<unknown, T>,
+): StandardSchemaV1.Result<T> {
+  const validationResult = schema['~standard'].validate(value);
 
   if (validationResult instanceof Promise) {
     throw new Error(
@@ -74,13 +105,4 @@ const parseStorageItem = <T>(
   }
 
   return validationResult;
-};
-
-const resolveParseResult = <T>(
-  parseResult: StandardSchemaV1.Result<T>,
-  defaultValueProvider: (issues: ReadonlyArray<StandardSchemaV1.Issue>) => T,
-): T => {
-  return parseResult.issues
-    ? defaultValueProvider(parseResult.issues)
-    : parseResult.value;
-};
+}
