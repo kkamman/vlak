@@ -8,9 +8,15 @@ import {
   WritableSignal,
 } from '@angular/core';
 import { StandardSchemaV1 } from '@standard-schema/spec';
+import { StorageItemCache } from './storage-item-cache';
 
-export interface StorageItem<TKey extends string, TValue> {
+export interface StorageItem<TKey extends string = string, TValue = unknown> {
+  readonly storage: Storage;
   readonly key: TKey;
+  readonly schema: StandardSchemaV1<unknown, TValue>;
+  readonly defaultValue: (
+    issues: ReadonlyArray<StandardSchemaV1.Issue>,
+  ) => TValue;
   readonly value: WritableSignal<TValue>;
 }
 
@@ -32,6 +38,21 @@ export function storageItem<
 
   const value = resolveStoredValue(storage.getItem(key), schema, defaultValue);
   const valueSignal = signal<TValue>(value);
+
+  const cache = inject(StorageItemCache);
+
+  const cachedItem = cache.get(storage, key);
+  const newItem = { storage, key, schema, defaultValue, value: valueSignal };
+
+  if (cachedItem) {
+    if (isCachedItemConfiguredCorrectly(cachedItem, newItem)) {
+      return cachedItem;
+    } else {
+      throw new Error(
+        `Another storage item with key '${cachedItem.key}' already exists, but is configured differently.`,
+      );
+    }
+  }
 
   const valuesToSkipWriting = new WeakSet<TValue>();
 
@@ -62,7 +83,18 @@ export function storageItem<
     storage.setItem(key, JSON.stringify(valueSignal()));
   });
 
-  return { key, value: valueSignal };
+  cache.add(newItem);
+  return newItem;
+}
+
+function isCachedItemConfiguredCorrectly<T extends StorageItem>(
+  cachedItem: StorageItem,
+  newItem: T,
+): cachedItem is T {
+  return (
+    cachedItem.schema === newItem.schema &&
+    cachedItem.defaultValue === cachedItem.defaultValue
+  );
 }
 
 function registerStorageListener(callback: (event: StorageEvent) => void) {

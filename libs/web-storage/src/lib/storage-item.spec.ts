@@ -8,7 +8,7 @@ describe('webStorageItem', () => {
     key: 'test',
     schema: zod.object({ test: zod.string() }),
     defaultValue: () => ({ test: 'test' }),
-  };
+  } as const;
 
   const localStorageSpy = vi
     .spyOn(Storage.prototype, 'getItem')
