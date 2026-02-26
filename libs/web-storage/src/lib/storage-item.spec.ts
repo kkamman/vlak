@@ -23,7 +23,7 @@ describe('storageItem', () => {
 
   beforeEach(() => {
     TestBed.configureTestingModule({
-      providers: [provideWebStorage({ watchStorage: false })],
+      providers: [provideWebStorage()],
     });
   });
 

@@ -1,10 +1,17 @@
-import { DestroyRef, inject, Injectable, Renderer2 } from '@angular/core';
+import {
+  DestroyRef,
+  inject,
+  Injectable,
+  RendererFactory2,
+} from '@angular/core';
 import { APPLY_STORAGE_EVENT, StorageItem } from './storage-item';
 
 @Injectable({ providedIn: 'root' })
 export class StorageWatcher {
-  private readonly renderer = inject(Renderer2);
+  private readonly rendererFactory = inject(RendererFactory2);
   private readonly destroyRef = inject(DestroyRef);
+
+  private readonly renderer = this.rendererFactory.createRenderer(null, null);
 
   private readonly watchedItemsByStorage: WeakMap<
     Storage,
@@ -66,7 +73,7 @@ export class StorageWatcher {
     const stopListening = this.renderer.listen(
       'window',
       'storage',
-      this.handleStorageEvent,
+      (storageEvent) => this.handleStorageEvent(storageEvent),
     );
 
     this.isListeningToStorageEvents = true;
