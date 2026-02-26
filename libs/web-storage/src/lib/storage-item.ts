@@ -3,138 +3,118 @@ import {
   DestroyRef,
   effect,
   inject,
-  Renderer2,
+  linkedSignal,
   signal,
   WritableSignal,
 } from '@angular/core';
 import { StandardSchemaV1 } from '@standard-schema/spec';
-import { StorageItemCache } from './storage-item-cache';
+import {
+  DEFAULT_WEB_STORAGE_CONFIG,
+  WEB_STORAGE_CONFIG,
+} from './configuration';
+import { StorageItemSignalCache } from './storage-item-signal-cache';
+import { StorageWatcher } from './storage-watcher';
+
+export const APPLY_STORAGE_EVENT = Symbol('applyStorageEvent');
 
 export interface StorageItem<TKey extends string = string, TValue = unknown> {
   readonly storage: Storage;
   readonly key: TKey;
-  readonly schema: StandardSchemaV1<unknown, TValue>;
-  readonly defaultValue: (
-    issues: ReadonlyArray<StandardSchemaV1.Issue>,
-  ) => TValue;
   readonly value: WritableSignal<TValue>;
+  readonly [APPLY_STORAGE_EVENT]: (event: StorageEvent) => void;
 }
 
-export function storageItem<
-  TKey extends string,
-  TValue extends object,
-  TSchema extends StandardSchemaV1<unknown, TValue>,
->(config: {
-  storage: Storage;
-  key: TKey;
-  schema: TSchema;
-  defaultValue: (
-    issues: ReadonlyArray<StandardSchemaV1.Issue>,
-  ) => StandardSchemaV1.InferOutput<TSchema>;
-}): StorageItem<TKey, StandardSchemaV1.InferOutput<TSchema>> {
-  assertInInjectionContext(storageItem);
+export function storageItem<TKey extends string, TValue>(
+  storage: Storage,
+  key: TKey,
+  schema: StandardSchemaV1<unknown, TValue>,
+  defaultValue:
+    | TValue
+    | ((issues: ReadonlyArray<StandardSchemaV1.Issue>) => TValue),
+): StorageItem<TKey, TValue> {
+  const item = storageItem.untyped(storage, key);
 
-  const { storage, key, schema, defaultValue } = config;
+  function resolveValue(value: unknown) {
+    const validationResult = schema['~standard'].validate(value);
 
-  const value = resolveStoredValue(storage.getItem(key), schema, defaultValue);
-  const valueSignal = signal<TValue>(value);
-
-  const cache = inject(StorageItemCache);
-
-  const cachedItem = cache.get(storage, key);
-  const newItem = { storage, key, schema, defaultValue, value: valueSignal };
-
-  if (cachedItem) {
-    if (isCachedItemConfiguredCorrectly(cachedItem, newItem)) {
-      return cachedItem;
-    } else {
+    if (validationResult instanceof Promise) {
       throw new Error(
-        `Another storage item with key '${cachedItem.key}' already exists, but is configured differently.`,
+        'Asynchronous validation is not supported for storage items.',
       );
     }
+
+    if (!validationResult.issues) {
+      return validationResult.value;
+    }
+
+    return defaultValue instanceof Function
+      ? defaultValue(validationResult.issues)
+      : defaultValue;
   }
 
-  const valuesToSkipWriting = new WeakSet<TValue>();
+  const valueSignal = linkedSignal(() => resolveValue(item.value()));
 
-  // Update the signal when the storage item changes in other tabs/windows
-  registerStorageListener((event) => {
-    if (event.storageArea !== storage) {
-      return;
-    }
+  effect(() => item.value.set(resolveValue(valueSignal())));
 
-    if (event.key !== key && event.key !== null) {
-      return;
-    }
+  const itemWithSchema = {
+    ...item,
+    schema,
+    defaultValue,
+    value: valueSignal,
+  };
 
-    const value = resolveStoredValue(event.newValue, schema, defaultValue);
-    valuesToSkipWriting.add(value);
-    valueSignal.set(value);
-  });
-
-  // Update storage whenever the signal value changes
-  effect(() => {
-    const value = valueSignal();
-
-    if (valuesToSkipWriting.has(value)) {
-      valuesToSkipWriting.delete(value);
-      return;
-    }
-
-    storage.setItem(key, JSON.stringify(valueSignal()));
-  });
-
-  cache.add(newItem);
-  return newItem;
+  return itemWithSchema;
 }
 
-function isCachedItemConfiguredCorrectly<T extends StorageItem>(
-  cachedItem: StorageItem,
-  newItem: T,
-): cachedItem is T {
-  return (
-    cachedItem.schema === newItem.schema &&
-    cachedItem.defaultValue === cachedItem.defaultValue
-  );
-}
+storageItem.untyped = function <TKey extends string>(
+  storage: Storage,
+  key: TKey,
+): StorageItem<TKey> {
+  assertInInjectionContext(storageItem);
 
-function registerStorageListener(callback: (event: StorageEvent) => void) {
-  const renderer = inject(Renderer2);
-  const destroyRef = inject(DestroyRef);
-  const disposeStorageListener = renderer.listen('window', 'storage', callback);
-  destroyRef.onDestroy(() => disposeStorageListener());
-}
+  const signalCache = inject(StorageItemSignalCache);
+  const cachedSignal = signalCache.getValueSignalForItemWithKey(storage, key);
 
-function resolveStoredValue<T>(
-  value: string | null,
-  schema: StandardSchemaV1<unknown, T>,
-  defaultValue: (issues: ReadonlyArray<StandardSchemaV1.Issue>) => T,
-): T {
-  const parsedValue = parseStoredValue(value);
-  const validationResult = validateStoredValue(parsedValue, schema);
-  return validationResult.issues
-    ? defaultValue(validationResult.issues)
-    : validationResult.value;
-}
+  const valueSignal =
+    cachedSignal ?? signal(safeJsonParse(storage.getItem(key)));
 
-function parseStoredValue(value: string | null): unknown | null {
+  effect(() => storage.setItem(key, JSON.stringify(valueSignal())));
+
+  const applyStorageEvent = (event: StorageEvent) => {
+    const storedValue = safeJsonParse(event.newValue);
+    valueSignal.set(storedValue);
+  };
+
+  const itemResult = {
+    storage,
+    key,
+    value: valueSignal,
+    [APPLY_STORAGE_EVENT]: applyStorageEvent,
+  };
+
+  const webStorageConfig =
+    inject(WEB_STORAGE_CONFIG, { optional: true }) ??
+    DEFAULT_WEB_STORAGE_CONFIG;
+
+  if (webStorageConfig.watchStorage) {
+    const storageWatcher = inject(StorageWatcher);
+    const stopWatching = storageWatcher.startWatching(itemResult);
+
+    const destroyRef = inject(DestroyRef, { optional: true });
+    destroyRef?.onDestroy(stopWatching);
+  }
+
+  if (!cachedSignal) {
+    signalCache.cacheItemValueSignal(itemResult);
+  }
+
+  return itemResult;
+};
+
+function safeJsonParse(value: string | null): unknown | null {
   try {
     return value !== null ? JSON.parse(value) : null;
   } catch {
     return null;
   }
-}
-
-function validateStoredValue<T>(
-  value: unknown,
-  schema: StandardSchemaV1<unknown, T>,
-): StandardSchemaV1.Result<T> {
-  const validationResult = schema['~standard'].validate(value);
-
-  if (validationResult instanceof Promise) {
-    throw new Error(
-      'Asynchronous validation is not supported for storage items.',
-    );
-  }
-
-  return validationResult;
 }
