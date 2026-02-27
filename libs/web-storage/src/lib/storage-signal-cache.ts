@@ -1,23 +1,26 @@
 import { Injectable, WritableSignal } from '@angular/core';
-import { StorageItem } from './storage-item';
 
 @Injectable({ providedIn: 'root' })
-export class StorageItemSignalCache {
+export class StorageSignalCache {
   private readonly cache = new WeakMap<
     Storage,
     Map<string, WritableSignal<unknown>>
   >();
 
-  public cacheItemValueSignal(item: StorageItem): void {
-    let storageCache = this.cache.get(item.storage);
+  public set(
+    storage: Storage,
+    key: string,
+    signal: WritableSignal<unknown>,
+  ): void {
+    let storageCache = this.cache.get(storage);
     if (!storageCache) {
       storageCache = new Map<string, WritableSignal<unknown>>();
-      this.cache.set(item.storage, storageCache);
+      this.cache.set(storage, storageCache);
     }
-    storageCache.set(item.key, item.value);
+    storageCache.set(key, signal);
   }
 
-  public getValueSignalForItemWithKey(
+  public get(
     storage: Storage,
     key: string,
   ): WritableSignal<unknown> | undefined {

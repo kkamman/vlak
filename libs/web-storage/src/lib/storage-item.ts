@@ -12,7 +12,7 @@ import {
   DEFAULT_WEB_STORAGE_CONFIG,
   WEB_STORAGE_CONFIG,
 } from './configuration';
-import { StorageItemSignalCache } from './storage-item-signal-cache';
+import { StorageSignalCache } from './storage-signal-cache';
 import { StorageWatcher } from './storage-watcher';
 
 export const APPLY_STORAGE_EVENT = Symbol('applyStorageEvent');
@@ -72,8 +72,8 @@ storageItem.untyped = function <TKey extends string>(
 ): StorageItem<TKey> {
   assertInInjectionContext(storageItem);
 
-  const signalCache = inject(StorageItemSignalCache);
-  const cachedSignal = signalCache.getValueSignalForItemWithKey(storage, key);
+  const signalCache = inject(StorageSignalCache);
+  const cachedSignal = signalCache.get(storage, key);
 
   const valueSignal =
     cachedSignal ?? signal(safeJsonParse(storage.getItem(key)));
@@ -105,7 +105,7 @@ storageItem.untyped = function <TKey extends string>(
   }
 
   if (!cachedSignal) {
-    signalCache.cacheItemValueSignal(itemResult);
+    signalCache.set(storage, key, valueSignal);
   }
 
   return itemResult;

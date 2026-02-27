@@ -78,6 +78,9 @@ export class StorageWatcher {
 
     this.isListeningToStorageEvents = true;
 
-    this.destroyRef.onDestroy(stopListening);
+    this.destroyRef.onDestroy(() => {
+      stopListening();
+      this.isListeningToStorageEvents = false;
+    });
   }
 }
